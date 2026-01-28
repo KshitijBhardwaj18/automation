@@ -1,7 +1,6 @@
 """FastAPI application for BYOC Platform."""
 
 import json
-import os
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -15,12 +14,7 @@ from api.models import (
     DeploymentStatus,
 )
 from api.pulumi_deployments import PulumiDeploymentsClient
-
-# Configuration
-PULUMI_ORG = os.environ.get("PULUMI_ORG", "")
-PULUMI_PROJECT = os.environ.get("PULUMI_PROJECT", "byoc-platform")
-GIT_REPO_URL = os.environ.get("GIT_REPO_URL", "")
-GIT_REPO_BRANCH = os.environ.get("GIT_REPO_BRANCH", "main")
+from api.settings import settings
 
 app = FastAPI(
     title="BYOC Platform API",
@@ -31,12 +25,12 @@ app = FastAPI(
 
 def get_pulumi_client() -> PulumiDeploymentsClient:
     """Get Pulumi Deployments client."""
-    if not PULUMI_ORG:
-        raise HTTPException(
-            status_code=500,
-            detail="PULUMI_ORG environment variable is required",
-        )
-    return PulumiDeploymentsClient(organization=PULUMI_ORG)
+    return PulumiDeploymentsClient(
+        organization=settings.pulumi_org,
+        access_token=settings.pulumi_access_token,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+    )
 
 
 async def run_deployment(
@@ -63,7 +57,7 @@ async def run_deployment(
         # Create the stack if it doesn't exist
         try:
             await client.create_stack(
-                project_name=PULUMI_PROJECT,
+                project_name=settings.pulumi_project,
                 stack_name=stack_name,
             )
         except Exception:
@@ -72,16 +66,16 @@ async def run_deployment(
 
         # Configure deployment settings
         await client.configure_deployment_settings(
-            project_name=PULUMI_PROJECT,
+            project_name=settings.pulumi_project,
             stack_name=stack_name,
             request=request,
-            repo_url=GIT_REPO_URL,
-            repo_branch=GIT_REPO_BRANCH,
+            repo_url=settings.git_repo_url,
+            repo_branch=settings.git_repo_branch,
         )
 
         # Trigger the deployment
         result = await client.trigger_deployment(
-            project_name=PULUMI_PROJECT,
+            project_name=settings.pulumi_project,
             stack_name=stack_name,
             operation="update",
         )
@@ -132,7 +126,7 @@ async def run_destroy(
 
         # Trigger destroy operation
         result = await client.trigger_deployment(
-            project_name=PULUMI_PROJECT,
+            project_name=settings.pulumi_project,
             stack_name=stack_name,
             operation="destroy",
         )
@@ -247,7 +241,7 @@ async def get_deployment_status(
         try:
             client = get_pulumi_client()
             status = await client.get_deployment_status(
-                project_name=PULUMI_PROJECT,
+                project_name=settings.pulumi_project,
                 stack_name=deployment.stack_name,
                 deployment_id=deployment.pulumi_deployment_id,
             )
@@ -257,7 +251,7 @@ async def get_deployment_status(
             if pulumi_status == "succeeded":
                 # Get outputs
                 outputs = await client.get_stack_outputs(
-                    project_name=PULUMI_PROJECT,
+                    project_name=settings.pulumi_project,
                     stack_name=stack_name,
                 )
                 db.update_deployment_status(
@@ -332,7 +326,7 @@ async def get_customer_outputs(
     try:
         client = get_pulumi_client()
         outputs = await client.get_stack_outputs(
-            project_name=PULUMI_PROJECT,
+            project_name=settings.pulumi_project,
             stack_name=deployment.stack_name,
         )
 

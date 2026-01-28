@@ -1,7 +1,6 @@
 """Pulumi Deployments API client for triggering deployments."""
 
-import os
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -17,34 +16,22 @@ class PulumiDeploymentsClient:
     def __init__(
         self,
         organization: str,
-        access_token: Optional[str] = None,
-        aws_access_key_id: Optional[str] = None,
-        aws_secret_access_key: Optional[str] = None,
+        access_token: str,
+        aws_access_key_id: str,
+        aws_secret_access_key: str,
     ):
         """Initialize the Pulumi Deployments client.
 
         Args:
             organization: Pulumi organization name
-            access_token: Pulumi access token (defaults to PULUMI_ACCESS_TOKEN env var)
-            aws_access_key_id: AWS access key ID (defaults to AWS_ACCESS_KEY_ID env var)
-            aws_secret_access_key: AWS secret access key (defaults to AWS_SECRET_ACCESS_KEY env var)
+            access_token: Pulumi access token
+            aws_access_key_id: AWS access key ID for deployments
+            aws_secret_access_key: AWS secret access key for deployments
         """
         self.organization = organization
-        self.access_token = access_token or os.environ.get("PULUMI_ACCESS_TOKEN", "")
-        if not self.access_token:
-            raise ValueError(
-                "PULUMI_ACCESS_TOKEN environment variable is required "
-                "or pass access_token parameter"
-            )
-
-        # AWS credentials for deployments
-        self.aws_access_key_id = aws_access_key_id or os.environ.get("AWS_ACCESS_KEY_ID", "")
-        self.aws_secret_access_key = aws_secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-        if not self.aws_access_key_id or not self.aws_secret_access_key:
-            raise ValueError(
-                "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables are required "
-                "or pass aws_access_key_id and aws_secret_access_key parameters"
-            )
+        self.access_token = access_token
+        self.aws_access_key_id = aws_access_key_id
+        self.aws_secret_access_key = aws_secret_access_key
 
         self.headers = {
             "Authorization": f"token {self.access_token}",
