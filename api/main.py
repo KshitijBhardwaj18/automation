@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
 from api.database import Database, db
+from api.esc_client import PulumiESCClient
 from api.models import (
     CustomerDeployment,
     CustomerOffboardRequest,
@@ -33,6 +34,14 @@ def get_pulumi_client() -> PulumiDeploymentsClient:
     )
 
 
+def get_esc_client() -> PulumiESCClient:
+    """Get Pulumi ESC client."""
+    return PulumiESCClient(
+        organization=settings.pulumi_org,
+        access_token=settings.pulumi_access_token,
+    )
+
+
 async def run_deployment(
     request: CustomerOnboardRequest,
     database: Database,
@@ -44,9 +53,11 @@ async def run_deployment(
         database: Database instance
     """
     stack_name = f"{request.customer_name}-{request.environment}"
+    esc_env_name = f"{request.customer_name}-{request.environment}"
 
     try:
-        client = get_pulumi_client()
+        pulumi_client = get_pulumi_client()
+        esc_client = get_esc_client()
 
         # Update status to in progress
         database.update_deployment_status(
@@ -54,9 +65,42 @@ async def run_deployment(
             status=DeploymentStatus.IN_PROGRESS,
         )
 
-        # Create the stack if it doesn't exist
+        # Step 1: Create ESC environment with customer configuration
         try:
-            await client.create_stack(
+            await esc_client.create_environment(
+                project_name=settings.esc_project,
+                env_name=esc_env_name,
+            )
+        except Exception:
+            # Environment might already exist, continue
+            pass
+
+        # Step 2: Update ESC environment with customer config
+        env_definition = esc_client.build_customer_environment_definition(
+            customer_name=request.customer_name,
+            environment=request.environment,
+            role_arn=request.role_arn,
+            external_id=request.external_id,
+            aws_region=request.aws_region,
+            vpc_cidr=request.vpc_cidr,
+            availability_zones=request.availability_zones,
+            eks_version=request.eks_version,
+            karpenter_version=request.karpenter_version,
+            argocd_version=request.argocd_version,
+            cert_manager_version=request.cert_manager_version,
+            external_secrets_version=request.external_secrets_version,
+            ingress_nginx_version=request.ingress_nginx_version,
+            argocd_repo_url=request.argocd_repo_url or "",
+        )
+        await esc_client.update_environment(
+            project_name=settings.esc_project,
+            env_name=esc_env_name,
+            definition=env_definition,
+        )
+
+        # Step 3: Create the Pulumi stack if it doesn't exist
+        try:
+            await pulumi_client.create_stack(
                 project_name=settings.pulumi_project,
                 stack_name=stack_name,
             )
@@ -64,17 +108,19 @@ async def run_deployment(
             # Stack might already exist, continue
             pass
 
-        # Configure deployment settings
-        await client.configure_deployment_settings(
+        # Step 4: Configure deployment settings (links to ESC environment)
+        await pulumi_client.configure_deployment_settings(
             project_name=settings.pulumi_project,
             stack_name=stack_name,
-            request=request,
+            esc_project=settings.esc_project,
+            esc_environment=esc_env_name,
             repo_url=settings.git_repo_url,
+            aws_region=request.aws_region,
             repo_branch=settings.git_repo_branch,
         )
 
-        # Trigger the deployment
-        result = await client.trigger_deployment(
+        # Step 5: Trigger the deployment
+        result = await pulumi_client.trigger_deployment(
             project_name=settings.pulumi_project,
             stack_name=stack_name,
             operation="update",
@@ -116,7 +162,7 @@ async def run_destroy(
     stack_name = f"{customer_name}-{environment}"
 
     try:
-        client = get_pulumi_client()
+        pulumi_client = get_pulumi_client()
 
         # Update status to destroying
         database.update_deployment_status(
@@ -125,7 +171,7 @@ async def run_destroy(
         )
 
         # Trigger destroy operation
-        result = await client.trigger_deployment(
+        result = await pulumi_client.trigger_deployment(
             project_name=settings.pulumi_project,
             stack_name=stack_name,
             operation="destroy",
@@ -140,7 +186,16 @@ async def run_destroy(
             pulumi_deployment_id=deployment_id,
         )
 
-        # Note: In production, poll for completion then delete the stack
+        # Note: In production, poll for completion then:
+        # 1. Delete the Pulumi stack
+        # 2. Delete the ESC environment
+        # For now, we leave cleanup to manual process or webhook handler
+
+        # Optionally delete ESC environment after destroy completes
+        # await esc_client.delete_environment(
+        #     project_name=settings.esc_project,
+        #     env_name=esc_env_name,
+        # )
 
     except Exception as e:
         database.update_deployment_status(

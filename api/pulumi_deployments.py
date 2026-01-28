@@ -4,8 +4,6 @@ from typing import Any
 
 import httpx
 
-from api.models import CustomerOnboardRequest
-
 # Pulumi Cloud API base URL
 PULUMI_API_BASE = "https://api.pulumi.com"
 
@@ -68,18 +66,25 @@ class PulumiDeploymentsClient:
         self,
         project_name: str,
         stack_name: str,
-        request: CustomerOnboardRequest,
+        esc_project: str,
+        esc_environment: str,
         repo_url: str,
+        aws_region: str,
         repo_branch: str = "main",
         repo_dir: str = ".",
     ) -> dict[str, Any]:
-        """Configure deployment settings for a stack.
+        """Configure deployment settings for a stack using ESC environment.
+
+        This is the clean approach - configuration comes from ESC environment,
+        not from preRunCommands.
 
         Args:
             project_name: Pulumi project name
             stack_name: Stack name
-            request: Customer onboarding request with configuration
+            esc_project: ESC project containing the environment
+            esc_environment: ESC environment name with customer config
             repo_url: Git repository URL containing Pulumi code
+            aws_region: AWS region for deployment
             repo_branch: Git branch to deploy from
             repo_dir: Directory within repo containing Pulumi.yaml
 
@@ -91,39 +96,16 @@ class PulumiDeploymentsClient:
             f"{project_name}/{stack_name}/deployments/settings"
         )
 
-        # Full stack identifier for pulumi config commands
+        # Full stack identifier for pulumi config env add command
         stack_id = f"{self.organization}/{project_name}/{stack_name}"
+        esc_env_path = f"{esc_project}/{esc_environment}"
 
-        # Build pre-run commands to set stack configuration
-        # Use --stack flag to ensure correct stack is targeted
+        # Only need one preRunCommand to link the ESC environment
+        # All config comes from ESC, not from individual pulumi config set commands
         pre_run_commands = [
             "pip install -r requirements.txt",
-            f"pulumi config set --stack {stack_id} customerName {request.customer_name}",
-            f"pulumi config set --stack {stack_id} environment {request.environment}",
-            f"pulumi config set --stack {stack_id} customerRoleArn {request.role_arn}",
-            f"pulumi config set --stack {stack_id} --secret externalId {request.external_id}",
-            f"pulumi config set --stack {stack_id} awsRegion {request.aws_region}",
-            f"pulumi config set --stack {stack_id} vpcCidr {request.vpc_cidr}",
-            f"pulumi config set --stack {stack_id} eksVersion {request.eks_version}",
-            f"pulumi config set --stack {stack_id} karpenterVersion {request.karpenter_version}",
-            f"pulumi config set --stack {stack_id} argocdVersion {request.argocd_version}",
-            f"pulumi config set --stack {stack_id} certManagerVersion {request.cert_manager_version}",
-            f"pulumi config set --stack {stack_id} externalSecretsVersion {request.external_secrets_version}",
-            f"pulumi config set --stack {stack_id} ingressNginxVersion {request.ingress_nginx_version}",
+            f"pulumi config env add {esc_env_path} --stack {stack_id} --yes",
         ]
-
-        # Add availability zones if provided
-        if request.availability_zones:
-            az_str = ",".join(request.availability_zones)
-            pre_run_commands.append(
-                f"pulumi config set --stack {stack_id} availabilityZones {az_str}"
-            )
-
-        # Add ArgoCD repo URL if provided
-        if request.argocd_repo_url:
-            pre_run_commands.append(
-                f"pulumi config set --stack {stack_id} argocdRepoUrl {request.argocd_repo_url}"
-            )
 
         settings = {
             "sourceContext": {
@@ -138,7 +120,7 @@ class PulumiDeploymentsClient:
                 "environmentVariables": {
                     "AWS_ACCESS_KEY_ID": self.aws_access_key_id,
                     "AWS_SECRET_ACCESS_KEY": {"secret": self.aws_secret_access_key},
-                    "AWS_REGION": request.aws_region,
+                    "AWS_REGION": aws_region,
                 },
             },
         }

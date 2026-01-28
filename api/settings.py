@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     pulumi_org: str = ""
     pulumi_project: str = "byoc-platform"
 
+    # Pulumi ESC settings
+    esc_project: str = "byoc-customers"
+
     # Git settings
     git_repo_url: str = ""
     git_repo_branch: str = "main"
