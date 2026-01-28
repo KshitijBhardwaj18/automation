@@ -91,26 +91,32 @@ class PulumiDeploymentsClient:
             f"{project_name}/{stack_name}/deployments/settings"
         )
 
-        # Build stack configuration from customer request
-        stack_config = {
-            f"{project_name}:customerName": request.customer_name,
-            f"{project_name}:environment": request.environment,
-            f"{project_name}:customerRoleArn": request.role_arn,
-            f"{project_name}:awsRegion": request.aws_region,
-            f"{project_name}:vpcCidr": request.vpc_cidr,
-            f"{project_name}:eksVersion": request.eks_version,
-            f"{project_name}:karpenterVersion": request.karpenter_version,
-            f"{project_name}:argocdVersion": request.argocd_version,
-            f"{project_name}:certManagerVersion": request.cert_manager_version,
-            f"{project_name}:externalSecretsVersion": request.external_secrets_version,
-            f"{project_name}:ingressNginxVersion": request.ingress_nginx_version,
-        }
+        # Build pre-run commands to set stack configuration
+        # These run before `pulumi up` and set the config values
+        pre_run_commands = [
+            "pip install -r requirements.txt",
+            f"pulumi config set customerName {request.customer_name}",
+            f"pulumi config set environment {request.environment}",
+            f"pulumi config set customerRoleArn {request.role_arn}",
+            f"pulumi config set --secret externalId {request.external_id}",
+            f"pulumi config set awsRegion {request.aws_region}",
+            f"pulumi config set vpcCidr {request.vpc_cidr}",
+            f"pulumi config set eksVersion {request.eks_version}",
+            f"pulumi config set karpenterVersion {request.karpenter_version}",
+            f"pulumi config set argocdVersion {request.argocd_version}",
+            f"pulumi config set certManagerVersion {request.cert_manager_version}",
+            f"pulumi config set externalSecretsVersion {request.external_secrets_version}",
+            f"pulumi config set ingressNginxVersion {request.ingress_nginx_version}",
+        ]
 
+        # Add availability zones if provided
         if request.availability_zones:
-            stack_config[f"{project_name}:availabilityZones"] = ",".join(request.availability_zones)
+            az_str = ",".join(request.availability_zones)
+            pre_run_commands.append(f"pulumi config set availabilityZones {az_str}")
 
+        # Add ArgoCD repo URL if provided
         if request.argocd_repo_url:
-            stack_config[f"{project_name}:argocdRepoUrl"] = request.argocd_repo_url
+            pre_run_commands.append(f"pulumi config set argocdRepoUrl {request.argocd_repo_url}")
 
         settings = {
             "sourceContext": {
@@ -121,12 +127,9 @@ class PulumiDeploymentsClient:
                 }
             },
             "operationContext": {
-                "preRunCommands": [
-                    "pip install -r requirements.txt",
-                ],
+                "preRunCommands": pre_run_commands,
                 "environmentVariables": {
-                    # Stack config values are set via pulumi config
-                    "PULUMI_CONFIG": self._encode_config(stack_config),
+                    "AWS_REGION": request.aws_region,
                 },
             },
         }
@@ -140,41 +143,6 @@ class PulumiDeploymentsClient:
             )
             response.raise_for_status()
             return response.json()
-
-    async def set_stack_config(
-        self,
-        project_name: str,
-        stack_name: str,
-        request: CustomerOnboardRequest,
-    ) -> None:
-        """Set stack configuration values including secrets.
-
-        This uses the Pulumi CLI via the API to set config values,
-        including the external_id as a secret.
-
-        Args:
-            project_name: Pulumi project name
-            stack_name: Stack name
-            request: Customer onboarding request
-        """
-        # Note: In production, you would use the Pulumi Automation API
-        # or CLI to set these config values, especially secrets.
-        # The Deployments API doesn't directly support setting secrets.
-        # This is a placeholder for the config that needs to be set.
-        pass
-
-    def _encode_config(self, config: dict[str, str]) -> str:
-        """Encode config dict as environment variable format.
-
-        Args:
-            config: Configuration key-value pairs
-
-        Returns:
-            Encoded config string
-        """
-        # Pulumi can read config from environment variables
-        # Format: key=value pairs
-        return ";".join(f"{k}={v}" for k, v in config.items())
 
     async def trigger_deployment(
         self,
