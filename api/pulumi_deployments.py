@@ -73,16 +73,16 @@ class PulumiDeploymentsClient:
         repo_branch: str = "main",
         repo_dir: str = ".",
     ) -> dict[str, Any]:
-        """Configure deployment settings for a stack using ESC environment.
+        """Configure deployment settings for a stack.
 
-        This is the clean approach - configuration comes from ESC environment,
-        not from preRunCommands.
+        Uses one preRunCommand to link ESC environment.
+        Dependencies are auto-installed by Pulumi.
 
         Args:
             project_name: Pulumi project name
             stack_name: Stack name
-            esc_project: ESC project containing the environment
-            esc_environment: ESC environment name with customer config
+            esc_project: ESC project name
+            esc_environment: ESC environment name
             repo_url: Git repository URL containing Pulumi code
             aws_region: AWS region for deployment
             repo_branch: Git branch to deploy from
@@ -96,16 +96,10 @@ class PulumiDeploymentsClient:
             f"{project_name}/{stack_name}/deployments/settings"
         )
 
-        # Full stack identifier for pulumi config env add command
+        # Link ESC environment via preRunCommand
+        # (Can't link via API after stack creation due to Pulumi limitation)
         stack_id = f"{self.organization}/{project_name}/{stack_name}"
         esc_env_path = f"{esc_project}/{esc_environment}"
-
-        # Only need one preRunCommand to link the ESC environment
-        # All config comes from ESC, not from individual pulumi config set commands
-        pre_run_commands = [
-            "pip install -r requirements.txt",
-            f"pulumi config env add {esc_env_path} --stack {stack_id} --yes",
-        ]
 
         settings = {
             "sourceContext": {
@@ -116,7 +110,12 @@ class PulumiDeploymentsClient:
                 }
             },
             "operationContext": {
-                "preRunCommands": pre_run_commands,
+                "preRunCommands": [
+                    f"pulumi config env add {esc_env_path} --stack {stack_id} --yes",
+                ],
+                "options": {
+                    "skipInstallDependencies": False,
+                },
                 "environmentVariables": {
                     "AWS_ACCESS_KEY_ID": self.aws_access_key_id,
                     "AWS_SECRET_ACCESS_KEY": {"secret": self.aws_secret_access_key},

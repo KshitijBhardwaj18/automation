@@ -98,7 +98,7 @@ async def run_deployment(
             definition=env_definition,
         )
 
-        # Step 3: Create the Pulumi stack if it doesn't exist
+        # Step 3: Create the Pulumi stack
         try:
             await pulumi_client.create_stack(
                 project_name=settings.pulumi_project,
@@ -108,7 +108,7 @@ async def run_deployment(
             # Stack might already exist, continue
             pass
 
-        # Step 4: Configure deployment settings (links to ESC environment)
+        # Step 4: Configure deployment settings (links ESC environment via preRunCommand)
         await pulumi_client.configure_deployment_settings(
             project_name=settings.pulumi_project,
             stack_name=stack_name,
