@@ -30,13 +30,16 @@ class Networking(pulumi.ComponentResource):
         child_opts = pulumi.ResourceOptions(parent=self, provider=provider)
 
         # Create VPC using awsx for simplified setup
+        # Using SINGLE NAT gateway to reduce costs and EIP usage
+        # For production, change to ONE_PER_AZ for high availability
         self.vpc = awsx.ec2.Vpc(
             f"{name}-vpc",
             cidr_block=vpc_cidr,
             availability_zone_names=availability_zones,
             nat_gateways=awsx.ec2.NatGatewayConfigurationArgs(
-                strategy=awsx.ec2.NatGatewayStrategy.ONE_PER_AZ,
+                strategy=awsx.ec2.NatGatewayStrategy.SINGLE,
             ),
+            subnet_strategy=awsx.ec2.SubnetAllocationStrategy.AUTO,
             subnet_specs=[
                 # Public subnets for load balancers
                 awsx.ec2.SubnetSpecArgs(
