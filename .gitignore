@@ -11,4 +11,4 @@ build/
 *.db
 byoc_platform.db
 .env
-.env.*
+!.env.example
