@@ -40,23 +40,31 @@ class PulumiDeploymentsClient:
         self,
         project_name: str,
         stack_name: str,
+        esc_environment: str | None = None,
     ) -> dict[str, Any]:
         """Create a new Pulumi stack.
 
         Args:
             project_name: Pulumi project name
             stack_name: Stack name to create
+            esc_environment: Optional ESC environment path to link (e.g., "byoc-customers/test1-dev")
 
         Returns:
             API response
         """
         url = f"{PULUMI_API_BASE}/api/stacks/{self.organization}/{project_name}"
 
+        payload: dict[str, Any] = {"stackName": stack_name}
+
+        # Link ESC environment at stack creation time - no preRunCommand needed!
+        if esc_environment:
+            payload["config"] = {"environment": esc_environment}
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url,
                 headers=self.headers,
-                json={"stackName": stack_name},
+                json=payload,
                 timeout=30.0,
             )
             response.raise_for_status()
@@ -66,23 +74,20 @@ class PulumiDeploymentsClient:
         self,
         project_name: str,
         stack_name: str,
-        esc_project: str,
-        esc_environment: str,
         repo_url: str,
         aws_region: str,
         repo_branch: str = "main",
         repo_dir: str = ".",
     ) -> dict[str, Any]:
-        """Configure deployment settings for a stack using ESC environment.
+        """Configure deployment settings for a stack.
 
-        This is the clean approach - configuration comes from ESC environment,
-        not from preRunCommands.
+        ESC environment is linked at stack creation time.
+        Dependencies are auto-installed by Pulumi (skipInstallDependencies=False).
+        No preRunCommands needed!
 
         Args:
             project_name: Pulumi project name
             stack_name: Stack name
-            esc_project: ESC project containing the environment
-            esc_environment: ESC environment name with customer config
             repo_url: Git repository URL containing Pulumi code
             aws_region: AWS region for deployment
             repo_branch: Git branch to deploy from
@@ -96,17 +101,6 @@ class PulumiDeploymentsClient:
             f"{project_name}/{stack_name}/deployments/settings"
         )
 
-        # Full stack identifier for pulumi config env add command
-        stack_id = f"{self.organization}/{project_name}/{stack_name}"
-        esc_env_path = f"{esc_project}/{esc_environment}"
-
-        # Only need one preRunCommand to link the ESC environment
-        # All config comes from ESC, not from individual pulumi config set commands
-        pre_run_commands = [
-            "pip install -r requirements.txt",
-            f"pulumi config env add {esc_env_path} --stack {stack_id} --yes",
-        ]
-
         settings = {
             "sourceContext": {
                 "git": {
@@ -116,7 +110,12 @@ class PulumiDeploymentsClient:
                 }
             },
             "operationContext": {
-                "preRunCommands": pre_run_commands,
+                # No preRunCommands needed!
+                # - ESC environment linked at stack creation
+                # - Dependencies auto-installed by Pulumi
+                "options": {
+                    "skipInstallDependencies": False,
+                },
                 "environmentVariables": {
                     "AWS_ACCESS_KEY_ID": self.aws_access_key_id,
                     "AWS_SECRET_ACCESS_KEY": {"secret": self.aws_secret_access_key},
