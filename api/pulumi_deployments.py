@@ -91,32 +91,39 @@ class PulumiDeploymentsClient:
             f"{project_name}/{stack_name}/deployments/settings"
         )
 
+        # Full stack identifier for pulumi config commands
+        stack_id = f"{self.organization}/{project_name}/{stack_name}"
+
         # Build pre-run commands to set stack configuration
-        # These run before `pulumi up` and set the config values
+        # Use --stack flag to ensure correct stack is targeted
         pre_run_commands = [
             "pip install -r requirements.txt",
-            f"pulumi config set customerName {request.customer_name}",
-            f"pulumi config set environment {request.environment}",
-            f"pulumi config set customerRoleArn {request.role_arn}",
-            f"pulumi config set --secret externalId {request.external_id}",
-            f"pulumi config set awsRegion {request.aws_region}",
-            f"pulumi config set vpcCidr {request.vpc_cidr}",
-            f"pulumi config set eksVersion {request.eks_version}",
-            f"pulumi config set karpenterVersion {request.karpenter_version}",
-            f"pulumi config set argocdVersion {request.argocd_version}",
-            f"pulumi config set certManagerVersion {request.cert_manager_version}",
-            f"pulumi config set externalSecretsVersion {request.external_secrets_version}",
-            f"pulumi config set ingressNginxVersion {request.ingress_nginx_version}",
+            f"pulumi config set --stack {stack_id} customerName {request.customer_name}",
+            f"pulumi config set --stack {stack_id} environment {request.environment}",
+            f"pulumi config set --stack {stack_id} customerRoleArn {request.role_arn}",
+            f"pulumi config set --stack {stack_id} --secret externalId {request.external_id}",
+            f"pulumi config set --stack {stack_id} awsRegion {request.aws_region}",
+            f"pulumi config set --stack {stack_id} vpcCidr {request.vpc_cidr}",
+            f"pulumi config set --stack {stack_id} eksVersion {request.eks_version}",
+            f"pulumi config set --stack {stack_id} karpenterVersion {request.karpenter_version}",
+            f"pulumi config set --stack {stack_id} argocdVersion {request.argocd_version}",
+            f"pulumi config set --stack {stack_id} certManagerVersion {request.cert_manager_version}",
+            f"pulumi config set --stack {stack_id} externalSecretsVersion {request.external_secrets_version}",
+            f"pulumi config set --stack {stack_id} ingressNginxVersion {request.ingress_nginx_version}",
         ]
 
         # Add availability zones if provided
         if request.availability_zones:
             az_str = ",".join(request.availability_zones)
-            pre_run_commands.append(f"pulumi config set availabilityZones {az_str}")
+            pre_run_commands.append(
+                f"pulumi config set --stack {stack_id} availabilityZones {az_str}"
+            )
 
         # Add ArgoCD repo URL if provided
         if request.argocd_repo_url:
-            pre_run_commands.append(f"pulumi config set argocdRepoUrl {request.argocd_repo_url}")
+            pre_run_commands.append(
+                f"pulumi config set --stack {stack_id} argocdRepoUrl {request.argocd_repo_url}"
+            )
 
         settings = {
             "sourceContext": {
