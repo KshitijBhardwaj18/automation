@@ -98,22 +98,22 @@ async def run_deployment(
             definition=env_definition,
         )
 
-        # Step 3: Create the Pulumi stack if it doesn't exist
+        # Step 3: Create the Pulumi stack with ESC environment linked
+        esc_env_path = f"{settings.esc_project}/{esc_env_name}"
         try:
             await pulumi_client.create_stack(
                 project_name=settings.pulumi_project,
                 stack_name=stack_name,
+                esc_environment=esc_env_path,
             )
         except Exception:
             # Stack might already exist, continue
             pass
 
-        # Step 4: Configure deployment settings (links to ESC environment)
+        # Step 4: Configure deployment settings (no ESC linking needed - done at stack creation)
         await pulumi_client.configure_deployment_settings(
             project_name=settings.pulumi_project,
             stack_name=stack_name,
-            esc_project=settings.esc_project,
-            esc_environment=esc_env_name,
             repo_url=settings.git_repo_url,
             aws_region=request.aws_region,
             repo_branch=settings.git_repo_branch,
