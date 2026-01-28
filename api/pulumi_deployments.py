@@ -18,12 +18,16 @@ class PulumiDeploymentsClient:
         self,
         organization: str,
         access_token: Optional[str] = None,
+        aws_access_key_id: Optional[str] = None,
+        aws_secret_access_key: Optional[str] = None,
     ):
         """Initialize the Pulumi Deployments client.
 
         Args:
             organization: Pulumi organization name
             access_token: Pulumi access token (defaults to PULUMI_ACCESS_TOKEN env var)
+            aws_access_key_id: AWS access key ID (defaults to AWS_ACCESS_KEY_ID env var)
+            aws_secret_access_key: AWS secret access key (defaults to AWS_SECRET_ACCESS_KEY env var)
         """
         self.organization = organization
         self.access_token = access_token or os.environ.get("PULUMI_ACCESS_TOKEN", "")
@@ -31,6 +35,15 @@ class PulumiDeploymentsClient:
             raise ValueError(
                 "PULUMI_ACCESS_TOKEN environment variable is required "
                 "or pass access_token parameter"
+            )
+
+        # AWS credentials for deployments
+        self.aws_access_key_id = aws_access_key_id or os.environ.get("AWS_ACCESS_KEY_ID", "")
+        self.aws_secret_access_key = aws_secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+        if not self.aws_access_key_id or not self.aws_secret_access_key:
+            raise ValueError(
+                "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables are required "
+                "or pass aws_access_key_id and aws_secret_access_key parameters"
             )
 
         self.headers = {
@@ -136,6 +149,8 @@ class PulumiDeploymentsClient:
             "operationContext": {
                 "preRunCommands": pre_run_commands,
                 "environmentVariables": {
+                    "AWS_ACCESS_KEY_ID": self.aws_access_key_id,
+                    "AWS_SECRET_ACCESS_KEY": {"secret": self.aws_secret_access_key},
                     "AWS_REGION": request.aws_region,
                 },
             },
