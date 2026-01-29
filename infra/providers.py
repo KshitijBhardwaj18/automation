@@ -1,8 +1,7 @@
-"""AWS and Kubernetes provider configuration with cross-account role assumption."""
+"""AWS provider configuration with cross-account role assumption."""
 
 import pulumi
 import pulumi_aws as aws
-import pulumi_kubernetes as k8s
 
 from infra.config import CustomerConfig
 
@@ -21,7 +20,6 @@ def create_customer_aws_provider(config: CustomerConfig) -> aws.Provider:
                 role_arn=config.customer_role_arn,
                 external_id=config.external_id,
                 session_name=f"pulumi-{pulumi.get_stack()}",
-                # 1 hour session duration (increase if deployments take longer)
                 duration="1h",
             )
         ],
@@ -33,23 +31,4 @@ def create_customer_aws_provider(config: CustomerConfig) -> aws.Provider:
                 "Stack": pulumi.get_stack(),
             },
         ),
-    )
-
-
-def create_k8s_provider(
-    name: str,
-    kubeconfig: pulumi.Output[str],
-    parent: pulumi.Resource,
-) -> k8s.Provider:
-    """Create Kubernetes provider from EKS kubeconfig.
-
-    Args:
-        name: Provider name prefix
-        kubeconfig: EKS cluster kubeconfig (as JSON string)
-        parent: Parent resource for dependency tracking
-    """
-    return k8s.Provider(
-        f"{name}-k8s",
-        kubeconfig=kubeconfig,
-        opts=pulumi.ResourceOptions(parent=parent),
     )

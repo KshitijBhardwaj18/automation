@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Git settings
     git_repo_url: str = ""
     git_repo_branch: str = "main"
+    git_repo_dir: str = "."  # Subdirectory containing Pulumi.yaml
     github_token: str = ""  # For private repos (optional)
 
     # AWS credentials (for Pulumi Deployments)

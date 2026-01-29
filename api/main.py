@@ -72,6 +72,7 @@ async def run_deployment(
             request=request,
             repo_url=settings.git_repo_url,
             repo_branch=settings.git_repo_branch,
+            repo_dir=settings.git_repo_dir,
         )
 
         # Step 3: Trigger the deployment

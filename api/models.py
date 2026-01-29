@@ -39,7 +39,7 @@ class CustomerOnboardRequest(BaseModel):
     role_arn: str = Field(
         ...,
         description="Customer's IAM role ARN for cross-account access",
-        pattern=r"^arn:aws:iam::\d{12}:role/.+$",
+        pattern=r"^arn:aws:iam::\\d{12}:role/.+$",
     )
     external_id: str = Field(
         ...,
@@ -61,25 +61,6 @@ class CustomerOnboardRequest(BaseModel):
     availability_zones: Optional[list[str]] = Field(
         default=None,
         description="Availability zones (defaults to 3 AZs in the region)",
-    )
-
-    # EKS configuration
-    eks_version: str = Field(
-        default="1.31",
-        description="EKS Kubernetes version",
-    )
-
-    # Bootstrap component versions
-    karpenter_version: str = Field(default="1.1.1")
-    argocd_version: str = Field(default="7.7.16")
-    cert_manager_version: str = Field(default="v1.16.3")
-    external_secrets_version: str = Field(default="0.12.1")
-    ingress_nginx_version: str = Field(default="4.12.0")
-
-    # ArgoCD GitOps configuration
-    argocd_repo_url: Optional[str] = Field(
-        default=None,
-        description="GitOps repository URL for ArgoCD",
     )
 
 
