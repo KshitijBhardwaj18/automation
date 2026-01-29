@@ -46,15 +46,7 @@ class PulumiDeploymentsClient:
         project_name: str,
         stack_name: str,
     ) -> dict[str, Any]:
-        """Create a new Pulumi stack.
-
-        Args:
-            project_name: Pulumi project name
-            stack_name: Stack name to create
-
-        Returns:
-            API response
-        """
+        """Create a new Pulumi stack."""
         url = f"{PULUMI_API_BASE}/api/stacks/{self.organization}/{project_name}"
 
         async with httpx.AsyncClient() as client:
@@ -76,25 +68,12 @@ class PulumiDeploymentsClient:
         repo_branch: str = "main",
         repo_dir: str = ".",
     ) -> dict[str, Any]:
-        """Configure deployment settings for a stack.
-
-        Args:
-            project_name: Pulumi project name
-            stack_name: Stack name
-            request: Customer onboarding request with configuration
-            repo_url: Git repository URL containing Pulumi code
-            repo_branch: Git branch to deploy from
-            repo_dir: Directory within repo containing Pulumi.yaml
-
-        Returns:
-            API response
-        """
+        """Configure deployment settings for a stack."""
         url = (
             f"{PULUMI_API_BASE}/api/stacks/{self.organization}/"
             f"{project_name}/{stack_name}/deployments/settings"
         )
 
-        # Full stack identifier for pulumi config commands
         stack_id = f"{self.organization}/{project_name}/{stack_name}"
 
         # Build pre-run commands to set stack configuration
@@ -105,12 +84,6 @@ class PulumiDeploymentsClient:
             f"pulumi config set --stack {stack_id} --secret externalId {request.external_id}",
             f"pulumi config set --stack {stack_id} awsRegion {request.aws_region}",
             f"pulumi config set --stack {stack_id} vpcCidr {request.vpc_cidr}",
-            f"pulumi config set --stack {stack_id} eksVersion {request.eks_version}",
-            f"pulumi config set --stack {stack_id} karpenterVersion {request.karpenter_version}",
-            f"pulumi config set --stack {stack_id} argocdVersion {request.argocd_version}",
-            f"pulumi config set --stack {stack_id} certManagerVersion {request.cert_manager_version}",
-            f"pulumi config set --stack {stack_id} externalSecretsVersion {request.external_secrets_version}",
-            f"pulumi config set --stack {stack_id} ingressNginxVersion {request.ingress_nginx_version}",
         ]
 
         # Add availability zones if provided
@@ -118,12 +91,6 @@ class PulumiDeploymentsClient:
             az_str = ",".join(request.availability_zones)
             pre_run_commands.append(
                 f"pulumi config set --stack {stack_id} availabilityZones {az_str}"
-            )
-
-        # Add ArgoCD repo URL if provided
-        if request.argocd_repo_url:
-            pre_run_commands.append(
-                f"pulumi config set --stack {stack_id} argocdRepoUrl {request.argocd_repo_url}"
             )
 
         # Build source context with optional GitHub auth for private repos
@@ -135,7 +102,6 @@ class PulumiDeploymentsClient:
             }
         }
 
-        # Add GitHub authentication for private repositories
         if self.github_token:
             source_context["git"]["gitAuth"] = {
                 "accessToken": {"secret": self.github_token}
@@ -170,17 +136,7 @@ class PulumiDeploymentsClient:
         operation: str = "update",
         inherit_settings: bool = True,
     ) -> dict[str, Any]:
-        """Trigger a Pulumi deployment.
-
-        Args:
-            project_name: Pulumi project name
-            stack_name: Stack name to deploy
-            operation: Pulumi operation (update, preview, refresh, destroy)
-            inherit_settings: Whether to use stack deployment settings
-
-        Returns:
-            API response with deployment ID
-        """
+        """Trigger a Pulumi deployment."""
         url = (
             f"{PULUMI_API_BASE}/api/stacks/{self.organization}/"
             f"{project_name}/{stack_name}/deployments"
@@ -207,16 +163,7 @@ class PulumiDeploymentsClient:
         stack_name: str,
         deployment_id: str,
     ) -> dict[str, Any]:
-        """Get the status of a deployment.
-
-        Args:
-            project_name: Pulumi project name
-            stack_name: Stack name
-            deployment_id: Deployment ID to check
-
-        Returns:
-            Deployment status
-        """
+        """Get the status of a deployment."""
         url = (
             f"{PULUMI_API_BASE}/api/stacks/{self.organization}/"
             f"{project_name}/{stack_name}/deployments/{deployment_id}"
@@ -236,15 +183,7 @@ class PulumiDeploymentsClient:
         project_name: str,
         stack_name: str,
     ) -> dict[str, Any]:
-        """Get stack outputs.
-
-        Args:
-            project_name: Pulumi project name
-            stack_name: Stack name
-
-        Returns:
-            Stack outputs
-        """
+        """Get stack outputs."""
         url = f"{PULUMI_API_BASE}/api/stacks/{self.organization}/{project_name}/{stack_name}/export"
 
         async with httpx.AsyncClient() as client:
@@ -256,11 +195,9 @@ class PulumiDeploymentsClient:
             response.raise_for_status()
             data = response.json()
 
-            # Extract outputs from stack state
             deployment = data.get("deployment", {})
             resources = deployment.get("resources", [])
 
-            # Find the stack resource which contains outputs
             for resource in resources:
                 if resource.get("type") == "pulumi:pulumi:Stack":
                     return resource.get("outputs", {})
@@ -273,13 +210,7 @@ class PulumiDeploymentsClient:
         stack_name: str,
         force: bool = False,
     ) -> None:
-        """Delete a Pulumi stack.
-
-        Args:
-            project_name: Pulumi project name
-            stack_name: Stack name to delete
-            force: Force delete even if resources exist
-        """
+        """Delete a Pulumi stack."""
         url = f"{PULUMI_API_BASE}/api/stacks/{self.organization}/{project_name}/{stack_name}"
         if force:
             url += "?force=true"
