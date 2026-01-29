@@ -4,6 +4,8 @@ from typing import Any
 
 import httpx
 
+from api.models import CustomerOnboardRequest
+
 # Pulumi Cloud API base URL
 PULUMI_API_BASE = "https://api.pulumi.com"
 
@@ -17,6 +19,7 @@ class PulumiDeploymentsClient:
         access_token: str,
         aws_access_key_id: str,
         aws_secret_access_key: str,
+        github_token: str | None = None,
     ):
         """Initialize the Pulumi Deployments client.
 
@@ -25,11 +28,13 @@ class PulumiDeploymentsClient:
             access_token: Pulumi access token
             aws_access_key_id: AWS access key ID for deployments
             aws_secret_access_key: AWS secret access key for deployments
+            github_token: GitHub personal access token for private repos (optional)
         """
         self.organization = organization
         self.access_token = access_token
         self.aws_access_key_id = aws_access_key_id
         self.aws_secret_access_key = aws_secret_access_key
+        self.github_token = github_token
 
         self.headers = {
             "Authorization": f"token {self.access_token}",
@@ -66,25 +71,18 @@ class PulumiDeploymentsClient:
         self,
         project_name: str,
         stack_name: str,
-        esc_project: str,
-        esc_environment: str,
+        request: CustomerOnboardRequest,
         repo_url: str,
-        aws_region: str,
         repo_branch: str = "main",
         repo_dir: str = ".",
     ) -> dict[str, Any]:
         """Configure deployment settings for a stack.
 
-        Uses one preRunCommand to link ESC environment.
-        Dependencies are auto-installed by Pulumi.
-
         Args:
             project_name: Pulumi project name
             stack_name: Stack name
-            esc_project: ESC project name
-            esc_environment: ESC environment name
+            request: Customer onboarding request with configuration
             repo_url: Git repository URL containing Pulumi code
-            aws_region: AWS region for deployment
             repo_branch: Git branch to deploy from
             repo_dir: Directory within repo containing Pulumi.yaml
 
@@ -96,30 +94,61 @@ class PulumiDeploymentsClient:
             f"{project_name}/{stack_name}/deployments/settings"
         )
 
-        # Link ESC environment via preRunCommand
-        # (Can't link via API after stack creation due to Pulumi limitation)
+        # Full stack identifier for pulumi config commands
         stack_id = f"{self.organization}/{project_name}/{stack_name}"
-        esc_env_path = f"{esc_project}/{esc_environment}"
+
+        # Build pre-run commands to set stack configuration
+        pre_run_commands = [
+            f"pulumi config set --stack {stack_id} customerName {request.customer_name}",
+            f"pulumi config set --stack {stack_id} environment {request.environment}",
+            f"pulumi config set --stack {stack_id} customerRoleArn {request.role_arn}",
+            f"pulumi config set --stack {stack_id} --secret externalId {request.external_id}",
+            f"pulumi config set --stack {stack_id} awsRegion {request.aws_region}",
+            f"pulumi config set --stack {stack_id} vpcCidr {request.vpc_cidr}",
+            f"pulumi config set --stack {stack_id} eksVersion {request.eks_version}",
+            f"pulumi config set --stack {stack_id} karpenterVersion {request.karpenter_version}",
+            f"pulumi config set --stack {stack_id} argocdVersion {request.argocd_version}",
+            f"pulumi config set --stack {stack_id} certManagerVersion {request.cert_manager_version}",
+            f"pulumi config set --stack {stack_id} externalSecretsVersion {request.external_secrets_version}",
+            f"pulumi config set --stack {stack_id} ingressNginxVersion {request.ingress_nginx_version}",
+        ]
+
+        # Add availability zones if provided
+        if request.availability_zones:
+            az_str = ",".join(request.availability_zones)
+            pre_run_commands.append(
+                f"pulumi config set --stack {stack_id} availabilityZones {az_str}"
+            )
+
+        # Add ArgoCD repo URL if provided
+        if request.argocd_repo_url:
+            pre_run_commands.append(
+                f"pulumi config set --stack {stack_id} argocdRepoUrl {request.argocd_repo_url}"
+            )
+
+        # Build source context with optional GitHub auth for private repos
+        source_context: dict[str, Any] = {
+            "git": {
+                "repoUrl": repo_url,
+                "branch": f"refs/heads/{repo_branch}",
+                "repoDir": repo_dir,
+            }
+        }
+
+        # Add GitHub authentication for private repositories
+        if self.github_token:
+            source_context["git"]["gitAuth"] = {
+                "accessToken": {"secret": self.github_token}
+            }
 
         settings = {
-            "sourceContext": {
-                "git": {
-                    "repoUrl": repo_url,
-                    "branch": f"refs/heads/{repo_branch}",
-                    "repoDir": repo_dir,
-                }
-            },
+            "sourceContext": source_context,
             "operationContext": {
-                "preRunCommands": [
-                    f"pulumi config env add {esc_env_path} --stack {stack_id} --yes",
-                ],
-                "options": {
-                    "skipInstallDependencies": False,
-                },
+                "preRunCommands": pre_run_commands,
                 "environmentVariables": {
                     "AWS_ACCESS_KEY_ID": self.aws_access_key_id,
                     "AWS_SECRET_ACCESS_KEY": {"secret": self.aws_secret_access_key},
-                    "AWS_REGION": aws_region,
+                    "AWS_REGION": request.aws_region,
                 },
             },
         }
