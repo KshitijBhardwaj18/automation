@@ -7,8 +7,13 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+# =============================================================================
+# ENUMS
+# =============================================================================
+
+
 class DeploymentStatus(str, Enum):
-    """Status of a customer deployment."""
+    """Status of a deployment."""
 
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
@@ -18,61 +23,141 @@ class DeploymentStatus(str, Enum):
     DESTROYED = "destroyed"
 
 
-class CustomerOnboardRequest(BaseModel):
-    """Request to onboard a new customer."""
+class EksMode(str, Enum):
+    """EKS compute mode."""
 
-    # Customer identity
-    customer_name: str = Field(
+    AUTO = "auto"
+    MANAGED = "managed"
+
+
+# =============================================================================
+# TENANT MODELS
+# =============================================================================
+
+
+class TenantCreate(BaseModel):
+    """Request to create a new tenant."""
+
+    name: str = Field(
         ...,
-        description="Unique customer identifier (used in stack name)",
+        description="Display name for the tenant",
+        min_length=2,
+        max_length=100,
+    )
+    slug: str = Field(
+        ...,
+        description="Unique URL-friendly identifier (used in stack names)",
         pattern=r"^[a-z0-9-]+$",
         min_length=3,
         max_length=50,
     )
-    environment: str = Field(
-        default="prod",
-        description="Environment name (dev/staging/prod)",
-        pattern=r"^[a-z0-9-]+$",
-    )
-
-    # Cross-account access
-    role_arn: str = Field(
+    aws_account_id: str = Field(
         ...,
-        description="Customer's IAM role ARN for cross-account access",
-        pattern=r"^arn:aws:iam::\\d{12}:role/.+$",
+        description="AWS Account ID (12 digits)",
+        pattern=r"^\d{12}$",
     )
-    external_id: str = Field(
-        ...,
-        description="External ID for secure role assumption",
-        min_length=10,
-    )
-
-    # AWS configuration
     aws_region: str = Field(
         default="us-east-1",
-        description="AWS region for deployment",
-    )
-
-    # Networking
-    vpc_cidr: str = Field(
-        default="10.0.0.0/16",
-        description="VPC CIDR block",
-    )
-    availability_zones: Optional[list[str]] = Field(
-        default=None,
-        description="Availability zones (defaults to 3 AZs in the region)",
+        description="Default AWS region for deployments",
     )
 
 
-class CustomerDeployment(BaseModel):
-    """Customer deployment record."""
+class Tenant(BaseModel):
+    """Tenant record."""
+
+    id: str
+    slug: str
+    name: str
+    aws_account_id: str
+    aws_region: str
+    role_arn: str
+    external_id: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TenantResponse(BaseModel):
+    """Response after creating a tenant."""
+
+    tenant: Tenant
+    message: str
+
+
+# =============================================================================
+# ENVIRONMENT CONFIG MODELS
+# =============================================================================
+
+
+class NodeGroupConfig(BaseModel):
+    """Configuration for managed node group."""
+
+    instance_types: list[str] = Field(default=["t3.medium"])
+    desired_size: int = Field(default=2, ge=1, le=100)
+    min_size: int = Field(default=1, ge=1, le=100)
+    max_size: int = Field(default=5, ge=1, le=100)
+    disk_size: int = Field(default=50, ge=20, le=1000)
+    capacity_type: str = Field(default="ON_DEMAND", pattern=r"^(ON_DEMAND|SPOT)$")
+
+
+class EnvironmentConfig(BaseModel):
+    """Configuration for a tenant's environment."""
+
+    vpc_cidr: str = Field(default="10.0.0.0/16")
+    availability_zones: Optional[list[str]] = Field(default=None)
+    eks_version: str = Field(default="1.31")
+    eks_mode: EksMode = Field(default=EksMode.MANAGED)
+    node_group_config: Optional[NodeGroupConfig] = Field(default=None)
+
+
+class ConfigResponse(BaseModel):
+    """Response for config operations."""
+
+    tenant_slug: str
+    environment: str
+    message: str
+    config: Optional[EnvironmentConfig] = None
+
+
+# =============================================================================
+# DEPLOYMENT MODELS
+# =============================================================================
+
+
+class DeployRequest(BaseModel):
+    """Request to deploy (empty body - config already saved)."""
+
+    pass
+
+
+class DestroyRequest(BaseModel):
+    """Request to destroy infrastructure."""
+
+    confirm: bool = Field(default=False)
+
+
+class DeploymentResponse(BaseModel):
+    """Response for deployment operations."""
+
+    tenant_slug: str
+    environment: str
+    stack_name: str
+    status: DeploymentStatus
+    message: str
+    deployment_id: Optional[str] = None
+
+
+class Deployment(BaseModel):
+    """Deployment record."""
 
     id: int
-    customer_name: str
+    tenant_id: str
+    tenant_slug: str
     environment: str
     stack_name: str
     aws_region: str
-    role_arn: str
     status: DeploymentStatus
     pulumi_deployment_id: Optional[str] = None
     outputs: Optional[dict] = None
@@ -82,25 +167,3 @@ class CustomerDeployment(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class DeploymentResponse(BaseModel):
-    """Response for deployment operations."""
-
-    customer_name: str
-    environment: str
-    stack_name: str
-    status: DeploymentStatus
-    message: str
-    deployment_id: Optional[str] = None
-
-
-class CustomerOffboardRequest(BaseModel):
-    """Request to offboard (destroy) a customer's infrastructure."""
-
-    customer_name: str = Field(..., description="Customer identifier")
-    environment: str = Field(default="prod", description="Environment name")
-    confirm: bool = Field(
-        default=False,
-        description="Must be true to confirm destruction",
-    )

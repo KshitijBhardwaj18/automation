@@ -1,26 +1,38 @@
-"""FastAPI application for BYOC Platform."""
+"""FastAPI application for BYOC Platform - Tenant-based architecture."""
 
 import json
-from typing import Optional
+import secrets
+import uuid
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
-from api.database import Database, db
+from api.config_store import config_store
+from api.database import Database, TenantRecord, db
 from api.models import (
-    CustomerDeployment,
-    CustomerOffboardRequest,
-    CustomerOnboardRequest,
+    ConfigResponse,
+    Deployment,
     DeploymentResponse,
     DeploymentStatus,
+    DeployRequest,
+    DestroyRequest,
+    EnvironmentConfig,
+    Tenant,
+    TenantCreate,
+    TenantResponse,
 )
 from api.pulumi_deployments import PulumiDeploymentsClient
 from api.settings import settings
 
 app = FastAPI(
     title="BYOC Platform API",
-    description="Multi-tenant BYOC (Bring Your Own Cloud) infrastructure deployment platform",
-    version="1.0.0",
+    description="Multi-tenant BYOC infrastructure deployment platform",
+    version="2.0.0",
 )
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
 
 
 def get_pulumi_client() -> PulumiDeploymentsClient:
@@ -35,60 +47,57 @@ def get_pulumi_client() -> PulumiDeploymentsClient:
 
 
 async def run_deployment(
-    request: CustomerOnboardRequest,
+    tenant: TenantRecord,
+    environment: str,
+    config: EnvironmentConfig,
     database: Database,
 ) -> None:
-    """Background task to run customer deployment.
-
-    Args:
-        request: Customer onboarding request
-        database: Database instance
-    """
-    stack_name = f"{request.customer_name}-{request.environment}"
+    """Background task to run deployment."""
+    stack_name = f"{tenant.slug}-{environment}"
 
     try:
         client = get_pulumi_client()
 
-        # Update status to in progress
         database.update_deployment_status(
             stack_name=stack_name,
             status=DeploymentStatus.IN_PROGRESS,
         )
 
-        # Step 1: Create the stack if it doesn't exist
+        # Create stack if needed
         try:
             await client.create_stack(
                 project_name=settings.pulumi_project,
                 stack_name=stack_name,
             )
         except Exception:
-            # Stack might already exist, continue
             pass
 
-        # Step 2: Configure deployment settings (sets all config via preRunCommands)
+        # Configure deployment
         await client.configure_deployment_settings(
             project_name=settings.pulumi_project,
             stack_name=stack_name,
-            request=request,
+            tenant_slug=tenant.slug,
+            environment=environment,
+            role_arn=tenant.role_arn,
+            external_id=tenant.external_id,
+            aws_region=tenant.aws_region,
+            config=config,
             repo_url=settings.git_repo_url,
             repo_branch=settings.git_repo_branch,
             repo_dir=settings.git_repo_dir,
         )
 
-        # Step 3: Trigger the deployment
+        # Trigger deployment
         result = await client.trigger_deployment(
             project_name=settings.pulumi_project,
             stack_name=stack_name,
             operation="update",
         )
 
-        deployment_id = result.get("id", "")
-
-        # Update status with deployment ID
         database.update_deployment_status(
             stack_name=stack_name,
             status=DeploymentStatus.IN_PROGRESS,
-            pulumi_deployment_id=deployment_id,
+            pulumi_deployment_id=result.get("id", ""),
         )
 
     except Exception as e:
@@ -99,43 +108,28 @@ async def run_deployment(
         )
 
 
-async def run_destroy(
-    customer_name: str,
-    environment: str,
-    database: Database,
-) -> None:
-    """Background task to destroy customer infrastructure.
-
-    Args:
-        customer_name: Customer identifier
-        environment: Environment name
-        database: Database instance
-    """
-    stack_name = f"{customer_name}-{environment}"
+async def run_destroy(tenant_slug: str, environment: str, database: Database) -> None:
+    """Background task to destroy infrastructure."""
+    stack_name = f"{tenant_slug}-{environment}"
 
     try:
         client = get_pulumi_client()
 
-        # Update status to destroying
         database.update_deployment_status(
             stack_name=stack_name,
             status=DeploymentStatus.DESTROYING,
         )
 
-        # Trigger destroy operation
         result = await client.trigger_deployment(
             project_name=settings.pulumi_project,
             stack_name=stack_name,
             operation="destroy",
         )
 
-        deployment_id = result.get("id", "")
-
-        # Update status with deployment ID
         database.update_deployment_status(
             stack_name=stack_name,
             status=DeploymentStatus.DESTROYING,
-            pulumi_deployment_id=deployment_id,
+            pulumi_deployment_id=result.get("id", ""),
         )
 
     except Exception as e:
@@ -146,93 +140,278 @@ async def run_destroy(
         )
 
 
+# =============================================================================
+# HEALTH
+# =============================================================================
+
+
 @app.get("/health")
 async def health_check() -> dict:
-    """Health check endpoint."""
+    """Health check."""
     return {"status": "healthy"}
 
 
-@app.post("/api/v1/customers/onboard", response_model=DeploymentResponse)
-async def onboard_customer(
-    request: CustomerOnboardRequest,
+# =============================================================================
+# TENANT ENDPOINTS
+# =============================================================================
+
+
+@app.post("/api/v1/tenants", response_model=TenantResponse)
+async def create_tenant(request: TenantCreate) -> TenantResponse:
+    """Create a new tenant.
+
+    Generates external_id for IAM role assumption.
+    Returns tenant with external_id (shown only once).
+    """
+    tenant_id = str(uuid.uuid4())
+    external_id = secrets.token_urlsafe(32)
+    role_arn = f"arn:aws:iam::{request.aws_account_id}:role/BYOCPlatformRole"
+
+    try:
+        record = db.create_tenant(
+            id=tenant_id,
+            slug=request.slug,
+            name=request.name,
+            aws_account_id=request.aws_account_id,
+            aws_region=request.aws_region,
+            role_arn=role_arn,
+            external_id=external_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    tenant = Tenant(
+        id=record.id,
+        slug=record.slug,
+        name=record.name,
+        aws_account_id=record.aws_account_id,
+        aws_region=record.aws_region,
+        role_arn=record.role_arn,
+        external_id=record.external_id,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+    return TenantResponse(
+        tenant=tenant,
+        message="Tenant created. Save the external_id - it won't be shown again.",
+    )
+
+
+@app.get("/api/v1/tenants", response_model=list[Tenant])
+async def list_tenants() -> list[Tenant]:
+    """List all tenants."""
+    records = db.list_tenants()
+    return [
+        Tenant(
+            id=r.id,
+            slug=r.slug,
+            name=r.name,
+            aws_account_id=r.aws_account_id,
+            aws_region=r.aws_region,
+            role_arn=r.role_arn,
+            external_id=r.external_id,
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+        )
+        for r in records
+    ]
+
+
+@app.get("/api/v1/tenants/{slug}", response_model=Tenant)
+async def get_tenant(slug: str) -> Tenant:
+    """Get tenant by slug."""
+    record = db.get_tenant_by_slug(slug)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Tenant '{slug}' not found")
+
+    return Tenant(
+        id=record.id,
+        slug=record.slug,
+        name=record.name,
+        aws_account_id=record.aws_account_id,
+        aws_region=record.aws_region,
+        role_arn=record.role_arn,
+        external_id=record.external_id,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+@app.delete("/api/v1/tenants/{slug}")
+async def delete_tenant(slug: str) -> dict:
+    """Delete tenant (must have no active deployments)."""
+    deployments = db.list_deployments(tenant_slug=slug)
+    active = [
+        d for d in deployments
+        if d.status not in [DeploymentStatus.DESTROYED, DeploymentStatus.FAILED]
+    ]
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete tenant with active deployments. Destroy them first.",
+        )
+
+    deleted = db.delete_tenant(slug)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Tenant '{slug}' not found")
+
+    return {"message": f"Tenant '{slug}' deleted"}
+
+
+# =============================================================================
+# CONFIG ENDPOINTS
+# =============================================================================
+
+
+@app.post(
+    "/api/v1/tenants/{slug}/environments/{environment}/config",
+    response_model=ConfigResponse,
+)
+async def save_config(
+    slug: str,
+    environment: str,
+    config: EnvironmentConfig,
+) -> ConfigResponse:
+    """Save environment configuration for a tenant."""
+    tenant = db.get_tenant_by_slug(slug)
+    if not tenant:
+        raise HTTPException(status_code=404, detail=f"Tenant '{slug}' not found")
+
+    config_store.save(slug, environment, config)
+
+    return ConfigResponse(
+        tenant_slug=slug,
+        environment=environment,
+        message="Configuration saved",
+        config=config,
+    )
+
+
+@app.get(
+    "/api/v1/tenants/{slug}/environments/{environment}/config",
+    response_model=ConfigResponse,
+)
+async def get_config(slug: str, environment: str) -> ConfigResponse:
+    """Get environment configuration."""
+    tenant = db.get_tenant_by_slug(slug)
+    if not tenant:
+        raise HTTPException(status_code=404, detail=f"Tenant '{slug}' not found")
+
+    config = config_store.get(slug, environment)
+    if not config:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Config for {slug}/{environment} not found",
+        )
+
+    return ConfigResponse(
+        tenant_slug=slug,
+        environment=environment,
+        message="Configuration retrieved",
+        config=config,
+    )
+
+
+@app.delete(
+    "/api/v1/tenants/{slug}/environments/{environment}/config",
+    response_model=ConfigResponse,
+)
+async def delete_config(slug: str, environment: str) -> ConfigResponse:
+    """Delete environment configuration."""
+    deleted = config_store.delete(slug, environment)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Config for {slug}/{environment} not found",
+        )
+
+    return ConfigResponse(
+        tenant_slug=slug,
+        environment=environment,
+        message="Configuration deleted",
+    )
+
+
+# =============================================================================
+# DEPLOYMENT ENDPOINTS
+# =============================================================================
+
+
+@app.post(
+    "/api/v1/tenants/{slug}/environments/{environment}/deploy",
+    response_model=DeploymentResponse,
+)
+async def deploy(
+    slug: str,
+    environment: str,
+    request: DeployRequest,
     background_tasks: BackgroundTasks,
 ) -> DeploymentResponse:
-    """Onboard a new customer - provisions full infrastructure in their AWS account.
+    """Deploy infrastructure for a tenant environment."""
+    stack_name = f"{slug}-{environment}"
 
-    This is an async operation. Use GET /api/v1/customers/{customer_name}/{environment}/status
-    to check deployment progress.
+    # Get tenant
+    tenant = db.get_tenant_by_slug(slug)
+    if not tenant:
+        raise HTTPException(status_code=404, detail=f"Tenant '{slug}' not found")
 
-    Args:
-        request: Customer onboarding configuration
-        background_tasks: FastAPI background tasks
+    # Get config
+    config = config_store.get(slug, environment)
+    if not config:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Config for {slug}/{environment} not found. Save config first.",
+        )
 
-    Returns:
-        Deployment response with status
-    """
-    stack_name = f"{request.customer_name}-{request.environment}"
-
-    # Check if deployment already exists
-    existing = db.get_deployment(request.customer_name, request.environment)
+    # Check existing deployment
+    existing = db.get_deployment(slug, environment)
     if existing:
         if existing.status == DeploymentStatus.IN_PROGRESS:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Deployment {stack_name} is already in progress",
-            )
+            raise HTTPException(status_code=409, detail="Deployment already in progress")
         if existing.status == DeploymentStatus.SUCCEEDED:
             raise HTTPException(
                 status_code=409,
-                detail=f"Deployment {stack_name} already exists. Use update endpoint to modify.",
+                detail="Deployment exists. Destroy first to redeploy.",
             )
 
     # Create deployment record
     try:
         db.create_deployment(
-            customer_name=request.customer_name,
-            environment=request.environment,
-            aws_region=request.aws_region,
-            role_arn=request.role_arn,
+            tenant_id=tenant.id,
+            tenant_slug=slug,
+            environment=environment,
+            aws_region=tenant.aws_region,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
-    # Run deployment in background
-    background_tasks.add_task(run_deployment, request, db)
+    # Run in background
+    background_tasks.add_task(run_deployment, tenant, environment, config, db)
 
     return DeploymentResponse(
-        customer_name=request.customer_name,
-        environment=request.environment,
+        tenant_slug=slug,
+        environment=environment,
         stack_name=stack_name,
         status=DeploymentStatus.PENDING,
-        message="Deployment initiated. Check status endpoint for progress.",
+        message="Deployment initiated",
     )
 
 
 @app.get(
-    "/api/v1/customers/{customer_name}/{environment}/status",
-    response_model=CustomerDeployment,
+    "/api/v1/tenants/{slug}/environments/{environment}/status",
+    response_model=Deployment,
 )
-async def get_deployment_status(
-    customer_name: str,
-    environment: str = "prod",
-) -> CustomerDeployment:
-    """Get the current deployment status for a customer.
-
-    Args:
-        customer_name: Customer identifier
-        environment: Environment name (default: prod)
-
-    Returns:
-        Customer deployment details
-    """
-    deployment = db.get_deployment(customer_name, environment)
+async def get_status(slug: str, environment: str) -> Deployment:
+    """Get deployment status."""
+    deployment = db.get_deployment(slug, environment)
     if not deployment:
         raise HTTPException(
             status_code=404,
-            detail=f"Deployment for {customer_name}-{environment} not found",
+            detail=f"Deployment for {slug}/{environment} not found",
         )
 
-    # If deployment is in progress, check Pulumi for updates
+    # Check Pulumi for updates if in progress
     if deployment.status == DeploymentStatus.IN_PROGRESS and deployment.pulumi_deployment_id:
         try:
             client = get_pulumi_client()
@@ -243,42 +422,34 @@ async def get_deployment_status(
             )
 
             pulumi_status = status.get("status", "")
-            stack_name = deployment.stack_name
             if pulumi_status == "succeeded":
-                # Get outputs
                 outputs = await client.get_stack_outputs(
                     project_name=settings.pulumi_project,
-                    stack_name=stack_name,
+                    stack_name=deployment.stack_name,
                 )
                 db.update_deployment_status(
-                    stack_name=stack_name,
+                    stack_name=deployment.stack_name,
                     status=DeploymentStatus.SUCCEEDED,
                     outputs=json.dumps(outputs),
                 )
-                updated = db.get_deployment(customer_name, environment)
-                if updated:
-                    deployment = updated
+                deployment = db.get_deployment(slug, environment)
             elif pulumi_status == "failed":
                 db.update_deployment_status(
-                    stack_name=stack_name,
+                    stack_name=deployment.stack_name,
                     status=DeploymentStatus.FAILED,
                     error_message=status.get("message", "Deployment failed"),
                 )
-                updated = db.get_deployment(customer_name, environment)
-                if updated:
-                    deployment = updated
+                deployment = db.get_deployment(slug, environment)
         except Exception:
-            # If we can't check status, just return current state
             pass
 
-    # Convert to response model
-    return CustomerDeployment(
+    return Deployment(
         id=deployment.id,
-        customer_name=deployment.customer_name,
+        tenant_id=deployment.tenant_id,
+        tenant_slug=deployment.tenant_slug,
         environment=deployment.environment,
         stack_name=deployment.stack_name,
         aws_region=deployment.aws_region,
-        role_arn=deployment.role_arn,
         status=deployment.status,
         pulumi_deployment_id=deployment.pulumi_deployment_id,
         outputs=json.loads(deployment.outputs) if deployment.outputs else None,
@@ -288,139 +459,36 @@ async def get_deployment_status(
     )
 
 
-@app.get("/api/v1/customers/{customer_name}/{environment}/outputs")
-async def get_customer_outputs(
-    customer_name: str,
-    environment: str = "prod",
-) -> dict:
-    """Get infrastructure outputs (VPC ID, EKS cluster name, etc.) for a customer.
-
-    Args:
-        customer_name: Customer identifier
-        environment: Environment name (default: prod)
-
-    Returns:
-        Stack outputs
-    """
-    deployment = db.get_deployment(customer_name, environment)
-    if not deployment:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Deployment for {customer_name}-{environment} not found",
-        )
-
-    if deployment.status != DeploymentStatus.SUCCEEDED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Deployment is not complete. Current status: {deployment.status}",
-        )
-
-    if deployment.outputs:
-        return json.loads(deployment.outputs)
-
-    # Fetch from Pulumi if not cached
-    try:
-        client = get_pulumi_client()
-        outputs = await client.get_stack_outputs(
-            project_name=settings.pulumi_project,
-            stack_name=deployment.stack_name,
-        )
-
-        # Cache outputs
-        db.update_deployment_status(
-            stack_name=deployment.stack_name,
-            status=DeploymentStatus.SUCCEEDED,
-            outputs=json.dumps(outputs),
-        )
-
-        return outputs
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch outputs: {str(e)}",
-        )
-
-
-@app.delete("/api/v1/customers/{customer_name}/{environment}")
-async def offboard_customer(
-    customer_name: str,
+@app.delete("/api/v1/tenants/{slug}/environments/{environment}")
+async def destroy(
+    slug: str,
     environment: str,
-    request: CustomerOffboardRequest,
+    request: DestroyRequest,
     background_tasks: BackgroundTasks,
 ) -> DeploymentResponse:
-    """Destroy all infrastructure for a customer (offboarding).
-
-    Args:
-        customer_name: Customer identifier
-        environment: Environment name
-        request: Offboard request with confirmation
-        background_tasks: FastAPI background tasks
-
-    Returns:
-        Deployment response
-    """
+    """Destroy infrastructure for a tenant environment."""
     if not request.confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="Must set confirm=true to destroy infrastructure",
-        )
+        raise HTTPException(status_code=400, detail="Must set confirm=true")
 
-    deployment = db.get_deployment(customer_name, environment)
+    deployment = db.get_deployment(slug, environment)
     if not deployment:
         raise HTTPException(
             status_code=404,
-            detail=f"Deployment for {customer_name}-{environment} not found",
+            detail=f"Deployment for {slug}/{environment} not found",
         )
 
     if deployment.status == DeploymentStatus.DESTROYING:
-        raise HTTPException(
-            status_code=409,
-            detail="Destruction already in progress",
-        )
+        raise HTTPException(status_code=409, detail="Destruction already in progress")
 
-    # Run destroy in background
-    background_tasks.add_task(run_destroy, customer_name, environment, db)
+    background_tasks.add_task(run_destroy, slug, environment, db)
 
     return DeploymentResponse(
-        customer_name=customer_name,
+        tenant_slug=slug,
         environment=environment,
         stack_name=deployment.stack_name,
         status=DeploymentStatus.DESTROYING,
-        message="Destruction initiated. Check status endpoint for progress.",
+        message="Destruction initiated",
     )
-
-
-@app.get("/api/v1/customers", response_model=list[CustomerDeployment])
-async def list_customers(
-    customer_name: Optional[str] = None,
-) -> list[CustomerDeployment]:
-    """List all customer deployments.
-
-    Args:
-        customer_name: Optional filter by customer name
-
-    Returns:
-        List of customer deployments
-    """
-    deployments = db.list_deployments(customer_name=customer_name)
-
-    return [
-        CustomerDeployment(
-            id=d.id,
-            customer_name=d.customer_name,
-            environment=d.environment,
-            stack_name=d.stack_name,
-            aws_region=d.aws_region,
-            role_arn=d.role_arn,
-            status=d.status,
-            pulumi_deployment_id=d.pulumi_deployment_id,
-            outputs=json.loads(d.outputs) if d.outputs else None,
-            error_message=d.error_message,
-            created_at=d.created_at,
-            updated_at=d.updated_at,
-        )
-        for d in deployments
-    ]
 
 
 if __name__ == "__main__":
