@@ -1,19 +1,14 @@
 # BYOC Platform
 
-A multi-tenant BYOC (Bring Your Own Cloud) infrastructure deployment platform using Pulumi and FastAPI.
+Multi-tenant BYOC (Bring Your Own Cloud) infrastructure deployment platform using Pulumi and FastAPI.
 
 ## Overview
 
-This platform enables SaaS providers to deploy infrastructure into customer AWS accounts using cross-account role assumption. It provisions:
+Deploy infrastructure into tenant AWS accounts using cross-account role assumption:
 
-- **VPC and Networking**: VPC, subnets, NAT gateways, route tables
-- **EKS Cluster**: Managed Kubernetes with Karpenter for autoscaling
-- **Bootstrap Components**:
-  - Karpenter (node autoscaling)
-  - ArgoCD (GitOps)
-  - Cert-manager (TLS certificates)
-  - External Secrets Operator (secrets management)
-  - Ingress NGINX (ingress controller)
+- **VPC and Networking**: VPC, subnets, NAT gateway, route tables
+- **EKS Cluster**: Managed Kubernetes (auto or managed node groups)
+- **Bootstrap Components**: Karpenter, ArgoCD, Cert-manager, External Secrets, Ingress NGINX
 
 ## Architecture
 
@@ -21,23 +16,14 @@ This platform enables SaaS providers to deploy infrastructure into customer AWS 
 ┌─────────────────┐     ┌──────────────────────────────────────────┐
 │   FastAPI       │     │           Pulumi Cloud                   │
 │   Service       │────▶│   Pulumi Deployments (hosted workers)    │
-│                 │     │   State Management                       │
 └─────────────────┘     └──────────────────────────────────────────┘
                                           │
                                           ▼ AssumeRole
                               ┌───────────────────────┐
-                              │  Customer AWS Account │
+                              │  Tenant AWS Account   │
                               │  - VPC, EKS, IAM      │
-                              │  - Bootstrap components│
                               └───────────────────────┘
 ```
-
-## Prerequisites
-
-- Python 3.11+
-- Pulumi CLI installed
-- Pulumi Cloud account
-- AWS credentials (for your control plane account)
 
 ## Quick Start
 
@@ -49,116 +35,136 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Set Environment Variables
+### 2. Configure Environment
 
 ```bash
-export PULUMI_ACCESS_TOKEN="your-pulumi-access-token"
-export PULUMI_ORG="your-pulumi-org"
-export PULUMI_PROJECT="byoc-platform"
-export GIT_REPO_URL="https://github.com/your-org/your-repo.git"
-export GIT_REPO_BRANCH="main"
+cp .env.example .env
+# Edit .env with your settings
 ```
 
-### 3. Run the API Locally
+### 3. Run the API
 
 ```bash
-cd api
-uvicorn main:app --reload --port 8000
+uvicorn api.main:app --reload --port 8000
 ```
 
-### 4. Customer Onboarding
+### 4. Create a Tenant
 
-First, have your customer deploy the IAM role in their account:
+```bash
+# Create tenant (generates external_id)
+curl -X POST http://localhost:8000/api/v1/tenants \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Acme Corporation",
+    "slug": "acme",
+    "aws_account_id": "123456789012"
+  }'
+```
+
+Save the `external_id` from the response - it's only shown once.
+
+### 5. Set Up IAM Role in Tenant Account
+
+Have the tenant create the IAM role using the template:
 
 ```bash
 aws cloudformation create-stack \
   --stack-name byoc-platform-role \
   --template-body file://templates/customer-iam-role.yaml \
   --parameters \
-    ParameterKey=TrustedAccountId,ParameterValue=<YOUR_AWS_ACCOUNT_ID> \
-    ParameterKey=ExternalId,ParameterValue=<UNIQUE_EXTERNAL_ID> \
+    ParameterKey=TrustedAccountId,ParameterValue=<YOUR_PLATFORM_ACCOUNT_ID> \
+    ParameterKey=ExternalId,ParameterValue=<EXTERNAL_ID_FROM_STEP_4> \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-Then trigger the deployment via API:
+### 6. Save Config and Deploy
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/customers/onboard \
+# Save environment config
+curl -X POST http://localhost:8000/api/v1/tenants/acme/environments/dev/config \
   -H "Content-Type: application/json" \
   -d '{
-    "customer_name": "acme",
-    "environment": "prod",
-    "role_arn": "arn:aws:iam::123456789012:role/BYOCPlatformDeployRole",
-    "external_id": "unique-external-id",
-    "aws_region": "us-west-2"
+    "eks_mode": "managed",
+    "node_group_config": {"desired_size": 2}
   }'
+
+# Deploy
+curl -X POST http://localhost:8000/api/v1/tenants/acme/environments/dev/deploy \
+  -H "Content-Type: application/json" -d '{}'
+
+# Check status
+curl http://localhost:8000/api/v1/tenants/acme/environments/dev/status
 ```
 
 ## API Endpoints
 
+### Tenants
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/customers/onboard` | Onboard a new customer |
-| GET | `/api/v1/customers/{name}/{env}/status` | Get deployment status |
-| GET | `/api/v1/customers/{name}/{env}/outputs` | Get infrastructure outputs |
-| DELETE | `/api/v1/customers/{name}/{env}` | Offboard (destroy) customer |
-| GET | `/api/v1/customers` | List all customers |
+| POST | `/api/v1/tenants` | Create tenant |
+| GET | `/api/v1/tenants` | List tenants |
+| GET | `/api/v1/tenants/{slug}` | Get tenant |
+| DELETE | `/api/v1/tenants/{slug}` | Delete tenant |
+
+### Config
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/tenants/{slug}/environments/{env}/config` | Save config |
+| GET | `/api/v1/tenants/{slug}/environments/{env}/config` | Get config |
+| DELETE | `/api/v1/tenants/{slug}/environments/{env}/config` | Delete config |
+
+### Deployment
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/tenants/{slug}/environments/{env}/deploy` | Deploy |
+| GET | `/api/v1/tenants/{slug}/environments/{env}/status` | Get status |
+| DELETE | `/api/v1/tenants/{slug}/environments/{env}` | Destroy |
 
 ## Project Structure
 
 ```
 .
-├── __main__.py                 # Pulumi entry point
-├── Pulumi.yaml                 # Pulumi project config
-├── requirements.txt            # Python dependencies
+├── __main__.py              # Pulumi entry point
+├── Pulumi.yaml              # Pulumi project config
+├── requirements.txt         # Python dependencies
 ├── api/
-│   ├── main.py                 # FastAPI application
-│   ├── models.py               # Pydantic models
-│   ├── database.py             # SQLite for customer tracking
-│   └── pulumi_deployments.py   # Pulumi Deployments API client
+│   ├── main.py              # FastAPI application
+│   ├── models.py            # Pydantic models
+│   ├── database.py          # SQLite database
+│   ├── config_store.py      # Config file storage
+│   ├── pulumi_deployments.py # Pulumi API client
+│   └── settings.py          # App settings
 ├── infra/
-│   ├── config.py               # Customer configuration schema
-│   ├── providers.py            # AWS/K8s provider setup
+│   ├── config.py            # Configuration schema
+│   ├── providers.py         # AWS/K8s providers
 │   └── components/
-│       ├── networking.py       # VPC, subnets, NAT
-│       ├── eks.py              # EKS cluster
-│       ├── iam.py              # IAM roles/policies
-│       └── bootstrap.py        # Karpenter, ArgoCD, etc.
+│       ├── networking.py    # VPC, subnets, NAT
+│       ├── eks.py           # EKS cluster
+│       ├── iam.py           # IAM roles/policies
+│       └── bootstrap.py     # Helm charts
 └── templates/
-    └── customer-iam-role.yaml  # CloudFormation for customer IAM role
+    └── customer-iam-role.yaml  # IAM role template
 ```
 
-## Configuration
+## Data Model
 
-Stack configuration is set per customer via the API. Key settings:
+- **Tenant**: Organization with AWS account
+  - `id`: UUID (internal)
+  - `slug`: Unique identifier (used in stack names)
+  - `name`: Display name
+  - `external_id`: Generated secret for role assumption
 
-| Config Key | Description | Default |
-|------------|-------------|---------|
-| `customerName` | Customer identifier | Required |
-| `customerRoleArn` | IAM role ARN in customer account | Required |
-| `externalId` | External ID for role assumption | Required |
-| `awsRegion` | AWS region for deployment | us-east-1 |
-| `vpcCidr` | VPC CIDR block | 10.0.0.0/16 |
-| `eksVersion` | EKS Kubernetes version | 1.31 |
-| `karpenterVersion` | Karpenter Helm chart version | 1.1.1 |
-| `argocdVersion` | ArgoCD Helm chart version | 7.7.16 |
-
-## Security
-
-- Cross-account access uses IAM role assumption with external ID
-- Secrets (external_id) are stored as Pulumi secrets
-- Customer IAM role follows least-privilege principle
-- All infrastructure is tagged for tracking
+- **Stack naming**: `{tenant_slug}-{environment}` (e.g., `acme-dev`)
 
 ## Development
 
 ```bash
-# Run type checking
+# Type checking
 pyright .
 
-# Run linting
+# Linting
 ruff check .
 
-# Format code
+# Format
 ruff format .
 ```

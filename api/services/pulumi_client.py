@@ -5,26 +5,20 @@ from typing import Any
 import httpx
 
 from api.models import EnvironmentConfig, EksMode
+from api.settings import settings
 
 PULUMI_API_BASE = "https://api.pulumi.com"
 
 
-class PulumiDeploymentsClient:
+class PulumiClient:
     """Client for Pulumi Deployments API."""
 
-    def __init__(
-        self,
-        organization: str,
-        access_token: str,
-        aws_access_key_id: str,
-        aws_secret_access_key: str,
-        github_token: str | None = None,
-    ):
-        self.organization = organization
-        self.access_token = access_token
-        self.aws_access_key_id = aws_access_key_id
-        self.aws_secret_access_key = aws_secret_access_key
-        self.github_token = github_token
+    def __init__(self):
+        self.organization = settings.pulumi_org
+        self.access_token = settings.pulumi_access_token
+        self.aws_access_key_id = settings.aws_access_key_id
+        self.aws_secret_access_key = settings.aws_secret_access_key
+        self.github_token = settings.github_token or None
 
         self.headers = {
             "Authorization": f"token {self.access_token}",
@@ -45,7 +39,7 @@ class PulumiDeploymentsClient:
             response.raise_for_status()
             return response.json()
 
-    async def configure_deployment_settings(
+    async def configure_deployment(
         self,
         project_name: str,
         stack_name: str,
@@ -55,9 +49,6 @@ class PulumiDeploymentsClient:
         external_id: str,
         aws_region: str,
         config: EnvironmentConfig,
-        repo_url: str,
-        repo_branch: str = "main",
-        repo_dir: str = ".",
     ) -> dict[str, Any]:
         """Configure deployment settings for a stack."""
         url = (
@@ -67,7 +58,6 @@ class PulumiDeploymentsClient:
 
         stack_id = f"{self.organization}/{project_name}/{stack_name}"
 
-        # Build pre-run commands
         pre_run_commands = [
             f"pulumi config set --stack {stack_id} customerName {tenant_slug}",
             f"pulumi config set --stack {stack_id} environment {environment}",
@@ -88,9 +78,8 @@ class PulumiDeploymentsClient:
         if config.eks_mode == EksMode.MANAGED:
             ng = config.node_group_config
             if ng:
-                instance_types_str = ",".join(ng.instance_types)
                 pre_run_commands.extend([
-                    f"pulumi config set --stack {stack_id} nodeInstanceTypes {instance_types_str}",
+                    f"pulumi config set --stack {stack_id} nodeInstanceTypes {','.join(ng.instance_types)}",
                     f"pulumi config set --stack {stack_id} nodeDesiredSize {ng.desired_size}",
                     f"pulumi config set --stack {stack_id} nodeMinSize {ng.min_size}",
                     f"pulumi config set --stack {stack_id} nodeMaxSize {ng.max_size}",
@@ -98,7 +87,6 @@ class PulumiDeploymentsClient:
                     f"pulumi config set --stack {stack_id} nodeCapacityType {ng.capacity_type}",
                 ])
             else:
-                # Default node group config
                 pre_run_commands.extend([
                     f"pulumi config set --stack {stack_id} nodeInstanceTypes t3.medium",
                     f"pulumi config set --stack {stack_id} nodeDesiredSize 2",
@@ -110,9 +98,9 @@ class PulumiDeploymentsClient:
 
         source_context: dict[str, Any] = {
             "git": {
-                "repoUrl": repo_url,
-                "branch": f"refs/heads/{repo_branch}",
-                "repoDir": repo_dir,
+                "repoUrl": settings.git_repo_url,
+                "branch": f"refs/heads/{settings.git_repo_branch}",
+                "repoDir": settings.git_repo_dir,
             }
         }
 
@@ -121,7 +109,7 @@ class PulumiDeploymentsClient:
                 "accessToken": {"secret": self.github_token}
             }
 
-        settings_payload = {
+        payload = {
             "sourceContext": source_context,
             "operationContext": {
                 "preRunCommands": pre_run_commands,
@@ -135,10 +123,7 @@ class PulumiDeploymentsClient:
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                url,
-                headers=self.headers,
-                json=settings_payload,
-                timeout=30.0,
+                url, headers=self.headers, json=payload, timeout=30.0
             )
             response.raise_for_status()
             return response.json()
@@ -148,7 +133,6 @@ class PulumiDeploymentsClient:
         project_name: str,
         stack_name: str,
         operation: str = "update",
-        inherit_settings: bool = True,
     ) -> dict[str, Any]:
         """Trigger a Pulumi deployment."""
         url = (
@@ -156,16 +140,11 @@ class PulumiDeploymentsClient:
             f"{project_name}/{stack_name}/deployments"
         )
 
-        payload = {
-            "operation": operation,
-            "inheritSettings": inherit_settings,
-        }
-
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 url,
                 headers=self.headers,
-                json=payload,
+                json={"operation": operation, "inheritSettings": True},
                 timeout=30.0,
             )
             response.raise_for_status()
@@ -184,46 +163,28 @@ class PulumiDeploymentsClient:
         )
 
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                url,
-                headers=self.headers,
-                timeout=30.0,
-            )
+            response = await client.get(url, headers=self.headers, timeout=30.0)
             response.raise_for_status()
             return response.json()
 
-    async def get_stack_outputs(self, project_name: str, stack_name: str) -> dict[str, Any]:
+    async def get_stack_outputs(
+        self, project_name: str, stack_name: str
+    ) -> dict[str, Any]:
         """Get stack outputs."""
         url = f"{PULUMI_API_BASE}/api/stacks/{self.organization}/{project_name}/{stack_name}/export"
 
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                url,
-                headers=self.headers,
-                timeout=30.0,
-            )
+            response = await client.get(url, headers=self.headers, timeout=30.0)
             response.raise_for_status()
             data = response.json()
 
-            deployment = data.get("deployment", {})
-            resources = deployment.get("resources", [])
-
+            resources = data.get("deployment", {}).get("resources", [])
             for resource in resources:
                 if resource.get("type") == "pulumi:pulumi:Stack":
                     return resource.get("outputs", {})
-
             return {}
 
-    async def delete_stack(self, project_name: str, stack_name: str, force: bool = False) -> None:
-        """Delete a Pulumi stack."""
-        url = f"{PULUMI_API_BASE}/api/stacks/{self.organization}/{project_name}/{stack_name}"
-        if force:
-            url += "?force=true"
 
-        async with httpx.AsyncClient() as client:
-            response = await client.delete(
-                url,
-                headers=self.headers,
-                timeout=30.0,
-            )
-            response.raise_for_status()
+def get_pulumi_client() -> PulumiClient:
+    """Get Pulumi client instance."""
+    return PulumiClient()

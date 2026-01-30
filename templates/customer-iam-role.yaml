@@ -22,7 +22,7 @@ Parameters:
 
   RoleName:
     Type: String
-    Default: BYOCPlatformDeployRole
+    Default: BYOCPlatformRole
     Description: Name for the IAM role
     AllowedPattern: '^[a-zA-Z0-9+=,.@_-]+$'
     MaxLength: 64
